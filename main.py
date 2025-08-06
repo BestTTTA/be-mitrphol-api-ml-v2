@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import xgboost as xgb
@@ -17,6 +18,10 @@ import json
 import hashlib
 import redis.asyncio as redis
 from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -28,26 +33,27 @@ app = FastAPI(title="ML Prediction Service with Redis Cache", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,  # Set to False when using allow_origins=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
-# Configuration
+# Configuration from environment variables
 MODELS_DIR = "models-ml"
-BASE_URL = "https://mitrphol.api.rust.thetigerteamacademy.net"
-REDIS_URL = "redis://119.59.102.60:6380"
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
-CACHE_TTL = 31536000  
-CACHE_PREFIX = "ml_predict"
+BASE_URL = os.getenv("BASE_URL", "https://mitrphol.api.rust.thetigerteamacademy.net")
+REDIS_URL = os.getenv("REDIS_URL", "redis://119.59.102.60:6380")
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_DELAY = int(os.getenv("RETRY_DELAY", "2"))  # seconds
+CACHE_TTL = int(os.getenv("CACHE_TTL", "31536000"))
+CACHE_PREFIX = os.getenv("CACHE_PREFIX", "ml_predict")
 
 # Prediction Level Constants
 PREDICTION_THRESHOLDS = {
-    "HIGH_MIN": 12.0,  # > 12
-    "MEDIUM_MIN": 10.0,  # >= 10 and <= 12
-    "MEDIUM_MAX": 12.0,
-    "LOW_MAX": 10.0  # < 10
+    "HIGH_MIN": float(os.getenv("HIGH_MIN", "12.0")),  # > 12
+    "MEDIUM_MIN": float(os.getenv("MEDIUM_MIN", "10.0")),  # >= 10 and <= 12
+    "MEDIUM_MAX": float(os.getenv("MEDIUM_MAX", "12.0")),
+    "LOW_MAX": float(os.getenv("LOW_MAX", "10.0"))  # < 10
 }
 
 # Redis connection
@@ -115,12 +121,16 @@ class ZoneStatistics(BaseModel):
     average_prediction: float
 
 class ModelPredictionResult(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    
     model_name: str
     predictions: List[PlantPrediction]
     zone_statistics: List[ZoneStatistics]
     overall_average: float
 
 class GroupedModelPredictionResult(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    
     model_name: str
     prediction_groups: List[PredictionGroup]
     zone_statistics: List[ZoneStatistics]
@@ -642,6 +652,9 @@ def group_predictions_by_level(predictions_df: pd.DataFrame) -> List[PredictionG
 @app.on_event("startup")
 async def startup_event():
     """Initialize Redis connection on startup"""
+    logger.info(f"Starting ML Prediction Service with BASE_URL: {BASE_URL}")
+    logger.info(f"Redis URL: {REDIS_URL}")
+    logger.info(f"Environment variables loaded")
     await get_redis_client()
 
 @app.on_event("shutdown")
@@ -649,17 +662,32 @@ async def shutdown_event():
     """Close Redis connection on shutdown"""
     await close_redis_client()
 
+@app.options("/{path:path}")
+async def handle_options(path: str):
+    """Handle OPTIONS requests for CORS preflight"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 @app.get("/")
 async def root():
     return {
         "message": "ML Prediction Service API with Redis Cache",
         "version": "1.1.0",
-        "features": ["CORS enabled", "Retry mechanism", "Grouped predictions", "Redis caching"],
+        "features": ["CORS enabled", "Retry mechanism", "Grouped predictions", "Redis caching", "Environment variables"],
         "prediction_thresholds": PREDICTION_THRESHOLDS,
-        "cache_config": {
+        "config": {
+            "base_url": BASE_URL,
             "redis_url": REDIS_URL,
             "cache_ttl": CACHE_TTL,
-            "cache_prefix": CACHE_PREFIX
+            "cache_prefix": CACHE_PREFIX,
+            "max_retries": MAX_RETRIES,
+            "retry_delay": RETRY_DELAY
         }
     }
 
@@ -947,7 +975,7 @@ async def get_prediction_levels():
             "MEDIUM": f"{PREDICTION_THRESHOLDS['MEDIUM_MIN']} <= prediction <= {PREDICTION_THRESHOLDS['MEDIUM_MAX']}",
             "LOW": f"prediction < {PREDICTION_THRESHOLDS['LOW_MAX']}"
         },
-        "description": "Prediction levels based on fixed thresholds"
+        "description": "Prediction levels based on configurable thresholds from environment variables"
     }
 
 @app.get("/cache/status")
@@ -1168,6 +1196,30 @@ async def debug_prediction_grouping(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/config")
+async def get_config():
+    """แสดงการตั้งค่าปัจจุบันของระบบ"""
+    return {
+        "environment_variables": {
+            "BASE_URL": BASE_URL,
+            "REDIS_URL": REDIS_URL,
+            "MAX_RETRIES": MAX_RETRIES,
+            "RETRY_DELAY": RETRY_DELAY,
+            "CACHE_TTL": CACHE_TTL,
+            "CACHE_PREFIX": CACHE_PREFIX,
+        },
+        "prediction_thresholds": PREDICTION_THRESHOLDS,
+        "models_directory": MODELS_DIR,
+        "features": [
+            "Environment variables support",
+            "Redis caching",
+            "Retry mechanism",
+            "Grouped predictions",
+            "Zone statistics",
+            "CORS enabled"
+        ]
+    }
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint with API and Redis connectivity test"""
@@ -1197,6 +1249,7 @@ async def health_check():
         "service": "ML Prediction Service with Redis Cache",
         "version": "1.1.0",
         "features": {
+            "environment_variables": True,
             "retry_mechanism": True,
             "max_retries": MAX_RETRIES,
             "retry_delay": RETRY_DELAY,
@@ -1210,10 +1263,15 @@ async def health_check():
         "external_api_url": BASE_URL,
         "redis_status": redis_status,
         "redis_url": REDIS_URL,
+        "config_from_env": {
+            "base_url_configured": BASE_URL != "https://mitrphol.api.rust.thetigerteamacademy.net",
+            "redis_url_configured": REDIS_URL != "redis://119.59.102.60:6380"
+        },
         "endpoints": {
             "original_predict": "/predict",
             "grouped_predict": "/predict/grouped",
             "prediction_levels": "/prediction-levels",
+            "config": "/config",
             "cache_status": "/cache/status",
             "cache_clear": "/cache/clear",
             "cache_keys": "/cache/keys",

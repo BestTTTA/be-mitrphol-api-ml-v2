@@ -1,3 +1,17 @@
 docker build -t bestbest/mitrphol-api-ml:v2 .
 
-docker run -d --restart=always -p 1256:1256 bestbest/mitrphol-api-ml:v2
+local
+docker run -d --name mitrphol-ml-api --restart=always \
+  -p 1256:1256 \
+  -e BASE_URL="https://mitrphol.api.rust.thetigerteamacademy.net" \
+  -e REDIS_URL="redis://119.59.102.60:6380" \
+  -v $(pwd)/models-ml:/app/models-ml \
+  bestbest/mitrphol-api-ml:v2
+
+server
+docker run -d --name mitrphol-ml-api --restart=always \
+  --network host \
+  -e BASE_URL="https://mitrphol.api.rust.thetigerteamacademy.net" \
+  -e REDIS_URL="redis://localhost:6380" \
+  -v $(pwd)/models-ml:/app/models-ml \
+  bestbest/mitrphol-api-ml:v2
